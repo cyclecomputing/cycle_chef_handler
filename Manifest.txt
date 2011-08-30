@@ -1,0 +1,8 @@
+.autotest
+History.txt
+Manifest.txt
+README.txt
+Rakefile
+bin/cycle_chef_handler
+lib/cycle_chef_handler.rb
+test/test_cycle_chef_handler.rb
