@@ -18,12 +18,13 @@ reports for the CycleServer Chef Dashboard available from Cycle Computing LLC.
 == INSTALL:
 
 * sudo gem install cycle_chef_handler
-* edit /etc/chef/client.rb on client nodes:
+* edit /etc/chef/client.rb on client nodes
+
+Example
 
   require 'cycle_chef_handler'
 
   handler = CycleChefHandler.new(:amqp_config => {:host => 'my_amqp_hostname'})
-
   report_handlers    << handler
   exception_handlers << handler
 
