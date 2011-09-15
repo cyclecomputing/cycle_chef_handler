@@ -26,22 +26,29 @@ require 'fileutils'
 require 'uri'
 
 class CycleChefHandler < Chef::Handler
-  VERSION = '1.2.0'
+  VERSION = '1.2.1'
 
   def initialize(params)
-    defaults = {:queue       => 'chef.converges',
-                :exchange    => 'chef.converges'}
+    defaults = {:exchange    => 'chef',
+                :exchange_type => :direct,
+                :exchange_durable => false,
+                :exchange_autodelete => false,
+                :bind_queue => false,
+                :queue => nil,
+                :queue_durable => false,
+                :queue_autodelete => true,
+                :routing_key => 'chef'}
 
     @amqp_config = defaults.merge(params[:amqp_config])
     check_amqp_config
 
-    @extras = params[:extras]
+    @extras = params[:extras] || {}
     @converge_index_file = params[:converge_index_file] || '/var/run/chef/converge_index'
     @failed_converge_file = params[:failed_converge_count_file] || '/var/run/chef/failed_converge_count'
   end
 
   def check_amqp_config
-    [:host, :queue, :exchange].each do |i|
+    [:host, :exchange].each do |i|
       if not @amqp_config[i]
         raise ArgumentError, ":amqp_config missing value for #{i}"
       end
@@ -60,17 +67,39 @@ class CycleChefHandler < Chef::Handler
 
       b.start
       e = b.exchange(@amqp_config[:exchange], 
-                     :type => :topic, 
-                     :durable => true, 
-                     :auto_delete => false)
+                     :type        => @amqp_config[:exchange_type],
+                     :durable     => @amqp_config[:exchange_durable], 
+                     :auto_delete => @amqp_config[:exchange_autodelete])
 
-      # declare and bind a non-auto-delete queue here to make sure we don't
-      # lose any messages posted to an exchange w/o a bound queue
-      # make the queue non-durable so we can drop it with a broker reboot
-      q = b.queue(@amqp_config[:queue], :auto_delete => false)
-      q.bind(@amqp_config[:exchange], :key => @amqp_config[:queue])
+      # in some cases, the user may want to declare and bind a queue
+      # to the exchange so consumers get all messages, even ones that 
+      # enter the exchange before the consumer exists.
+      if @amqp_config[:bind_queue]
+        q = b.queue(@amqp_config[:queue], 
+                   :durable     => @amqp_config[:queue_durable],
+                   :auto_delete => @amqp_config[:queue_autodelete])
 
-      e.publish(payload, :key => @amqp_config[:queue])
+        if not @amqp_config[:routing_key].nil?
+
+          q.bind(@amqp_config[:exchange], :key => @amqp_config[:routing_key])
+
+        else
+
+          q.bind(@amqp_config[:exchange])
+
+        end
+
+      end
+
+      if not @amqp_config[:routing_key].nil?
+
+        e.publish(payload, :key => @amqp_config[:routing_key])
+
+      else
+        
+        e.publish(payload)
+      
+      end
 
     rescue Exception => e
 
