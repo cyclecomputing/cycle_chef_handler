@@ -3,6 +3,7 @@
 # Report handler for chef clients to be used with CycleServer Chef Dashboard
 #
 # Author: Chris Chalfant (chris.chalfant@cyclecomputing.com)
+# Author: Dan Harris (dharris@cyclecomputing.com)
 #
 # Copyright 2010 Cycle Computing LLC
 #
@@ -26,7 +27,7 @@ require 'fileutils'
 require 'uri'
 
 class CycleChefHandler < Chef::Handler
-  VERSION = '1.2.1'
+  VERSION = '1.2.2'
 
   def initialize(params)
     defaults = {:exchange    => 'chef',
@@ -37,7 +38,9 @@ class CycleChefHandler < Chef::Handler
                 :queue => nil,
                 :queue_durable => false,
                 :queue_autodelete => true,
-                :routing_key => 'chef'}
+                :routing_key => 'chef',
+                :max_retries => 5,
+                :retry_delay => 5}
 
     @amqp_config = defaults.merge(params[:amqp_config])
     check_amqp_config
@@ -55,67 +58,74 @@ class CycleChefHandler < Chef::Handler
     end
   end
 
+
   def report
 
     ## Create and Post a classad
     ad = create_ad
     payload = "<classads>" + ad.to_xml + "</classads>"
     
-    begin
+    for attempt in 1..@amqp_config[:max_retries] do
+      begin
 
-      b = Bunny.new(@amqp_config)
+        b = Bunny.new(@amqp_config)
 
-      b.start
-      e = b.exchange(@amqp_config[:exchange], 
-                     :type        => @amqp_config[:exchange_type],
-                     :durable     => @amqp_config[:exchange_durable], 
-                     :auto_delete => @amqp_config[:exchange_autodelete])
+        b.start
+        e = b.exchange(@amqp_config[:exchange], 
+                      :type        => @amqp_config[:exchange_type],
+                      :durable     => @amqp_config[:exchange_durable], 
+                      :auto_delete => @amqp_config[:exchange_autodelete])
 
-      # in some cases, the user may want to declare and bind a queue
-      # to the exchange so consumers get all messages, even ones that 
-      # enter the exchange before the consumer exists.
-      if @amqp_config[:bind_queue]
-        q = b.queue(@amqp_config[:queue], 
-                   :durable     => @amqp_config[:queue_durable],
-                   :auto_delete => @amqp_config[:queue_autodelete])
+        # in some cases, the user may want to declare and bind a queue
+        # to the exchange so consumers get all messages, even ones that 
+        # enter the exchange before the consumer exists.
+        if @amqp_config[:bind_queue]
+          q = b.queue(@amqp_config[:queue], 
+                     :durable     => @amqp_config[:queue_durable],
+                     :auto_delete => @amqp_config[:queue_autodelete])
 
-        if not @amqp_config[:routing_key].nil?
+          if not @amqp_config[:routing_key].nil?
 
-          q.bind(@amqp_config[:exchange], :key => @amqp_config[:routing_key])
+            q.bind(@amqp_config[:exchange], :key => @amqp_config[:routing_key])
 
-        else
+          else
 
-          q.bind(@amqp_config[:exchange])
+            q.bind(@amqp_config[:exchange])
+
+          end
 
         end
 
-      end
+        if not @amqp_config[:routing_key].nil?
 
-      if not @amqp_config[:routing_key].nil?
+          e.publish(payload, :key => @amqp_config[:routing_key])
 
-        e.publish(payload, :key => @amqp_config[:routing_key])
-
-      else
+        else
+          
+          e.publish(payload)
         
-        e.publish(payload)
-      
+        end
+
+        Chef::Log.info("Posted converge history report")
+        return
+
+      rescue Exception => e
+        if attempt < @amqp_config[:max_retries]
+          delay = attempt * @amqp_config[:retry_delay]
+          Chef::Log.error("Failed to post converge history report, retrying in #{delay} seconds...")
+          sleep(delay)  # Sleep for a while if it's a transient communcation error then try again
+        else
+          trace = e.backtrace.join("\n")
+          Chef::Log.error("Failed to post converge history report: #{e.message} #{trace}")
+          return
+        end
+
+      ensure
+
+        b.stop
+
       end
-
-    rescue Exception => e
-
-      # log any exceptions, but don't throw one.
-      trace = e.backtrace.join("\n")
-      Chef::Log.error("Failed to post converge history report: #{e.message} #{trace}")
-      return
-
-    ensure
-
-      b.stop
-
     end
-
-    Chef::Log.info("Posted converge history report")
-
   end
 
   def create_ad
