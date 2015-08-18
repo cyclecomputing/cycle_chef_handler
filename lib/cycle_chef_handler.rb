@@ -27,7 +27,7 @@ require 'fileutils'
 require 'uri'
 
 class CycleChefHandler < Chef::Handler
-  VERSION = '1.2.3'
+  VERSION = '1.2.4'
 
   def initialize(params)
     defaults = {:exchange    => 'chef',
